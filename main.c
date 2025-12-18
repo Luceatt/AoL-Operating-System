@@ -3,7 +3,15 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/time.h>
-#include <sys/wait.h>
+
+// GLOBAL VARIABLE:
+// Parameter untuk Round Robin Scheduler.
+#define MAX_PROCESS 5
+#define TIME_QUANTUM 2
+
+int current_time = 0;       // Waktu simulasi sistem (dalam detik).
+int current_process = -1;   // Index process yang sedang RUNNING.
+volatile sig_atomic_t quantum_expired = 0;  // Flag untuk tandain bahwa time quantum telah habis.
 
 // Process state sebagai representasi status execution suatu process dalam OS.
 typedef enum {
@@ -79,9 +87,158 @@ PCB create_pcb(int id, int arrival_time, int burst_time) {
     return pcb; // Return pcb yang sudah diisi.
 }
 
-// Parameter untuk Round Robin Scheduler.
-#define MAX_PROCESS 5
-#define TIME_QUANTUM 2
+// Signal handler untuk SIGALRM (timer interrupt)
+void timer_handler(int signum) {
+    // Hindari warning unused parameter
+    (void)signum;
+
+    // Tandai bahwa quantum telah habis
+    quantum_expired = 1;
+}
+
+// Function untuk mengaktifkan timer quantum
+void setup_timer() {
+    struct itimerval timer;
+
+    // Waktu sampai SIGALRM pertama
+    timer.it_value.tv_sec = TIME_QUANTUM;
+    timer.it_value.tv_usec = 0;
+
+    // Interval SIGALRM berikutnya
+    timer.it_interval.tv_sec = TIME_QUANTUM;
+    timer.it_interval.tv_usec = 0;
+
+    setitimer(ITIMER_REAL, &timer, NULL);
+}
+
+// Untuk stop timer saat semua proses dalam state FINISHED.
+void stop_timer() {
+    struct itimerval timer;
+
+    // Set semua nilai timer ke 0 → timer berhenti
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = 0;
+    timer.it_interval.tv_sec = 0;
+    timer.it_interval.tv_usec = 0;
+
+    setitimer(ITIMER_REAL, &timer, NULL);
+}
+
+// Function untuk mendaftarkan signal handler
+void setup_signal_handler() {
+    struct sigaction sa;
+
+    sa.sa_handler = timer_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+
+    sigaction(SIGALRM, &sa, NULL);
+}
+
+// ROUND ROBIN Scheduler Function
+int select_next_process(PCB pcb[], int n) {
+    int start = (current_process + 1) % n;
+
+    for (int i = 0; i < n; i++) {
+        int idx = (start + i) % n;
+
+        if (pcb[idx].state == READY && pcb[idx].remaining_time > 0 && pcb[idx].arrival_time <= current_time) {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+void update_waiting_time(PCB pcb[], int n) {
+    for (int i = 0; i < n; i++) {
+        if (pcb[i].state == READY &&
+            pcb[i].arrival_time <= current_time &&
+            i != current_process) {
+            pcb[i].waiting_time += TIME_QUANTUM;
+        }
+    }
+}
+
+void finish_process(PCB pcb[], int index) {
+    pcb[index].state = FINISHED;
+    pcb[index].finish_time = current_time;
+
+    pcb[index].turnaround_time =
+        pcb[index].finish_time - pcb[index].arrival_time;
+
+    pcb[index].waiting_time =
+        pcb[index].turnaround_time - pcb[index].burst_time;
+}
+
+void round_robin_scheduler(PCB pcb[], int n) {
+
+    // Jika ada process RUNNING → preempt
+    if (current_process != -1) {
+        kill(pcb[current_process].pid, SIGSTOP);
+
+        pcb[current_process].remaining_time -= TIME_QUANTUM;
+
+        // Update waiting time proses lain
+        update_waiting_time(pcb, n);
+
+        current_time += TIME_QUANTUM;
+
+        // Jika selesai
+        if (pcb[current_process].remaining_time <= 0) {
+            finish_process(pcb, current_process);
+        } else {
+            pcb[current_process].state = READY;
+        }
+    }
+
+    // Pilih process berikutnya
+    int next = select_next_process(pcb, n);
+
+    if (next == -1) {
+        return; // Tidak ada process READY saat ini
+    }
+
+    current_process = next;
+    pcb[current_process].state = RUNNING;
+    kill(pcb[current_process].pid, SIGCONT);
+
+    quantum_expired = 0;
+}
+
+void display_process_status(PCB pcb[], int n) {
+    printf("\n[TIME %d]\n", current_time);
+    for (int i = 0; i < n; i++) {
+        printf("P%d | State: %d | Remaining: %d | Waiting: %d\n",
+               pcb[i].id,
+               pcb[i].state,
+               pcb[i].remaining_time,
+               pcb[i].waiting_time);
+    }
+}
+
+void print_final_result(PCB pcb[], int n) {
+    int total_wt = 0, total_tat = 0;
+
+    printf("\nFinal Result:\n");
+    printf("PID | AT | BT | WT | TAT\n");
+
+    for (int i = 0; i < n; i++) {
+        printf("P%d  | %d  | %d  | %d  | %d\n",
+               pcb[i].id,
+               pcb[i].arrival_time,
+               pcb[i].burst_time,
+               pcb[i].waiting_time,
+               pcb[i].turnaround_time);
+
+        total_wt += pcb[i].waiting_time;
+        total_tat += pcb[i].turnaround_time;
+    }
+
+    printf("\nAverage Waiting Time = %.2f\n",
+           (float)total_wt / n);
+    printf("Average Turnaround Time = %.2f\n",
+           (float)total_tat / n);
+}
 
 int main() {
     printf("Round Robin Scheduler Setup\n");
@@ -117,9 +274,33 @@ int main() {
         }
     }
 
+    // Setup signal handler untuk timer.
+    setup_signal_handler();
+
+    // Aktifkan timer quantum.
+    setup_timer();
+
     // Scheduler belum dijalankan
     while (1) {
-        pause();
+        pause();   // Tunggu SIGALRM
+
+        if (quantum_expired) {
+            round_robin_scheduler(pcb, MAX_PROCESS);
+            display_process_status(pcb, MAX_PROCESS);
+
+            // Cek apakah semua proses FINISHED
+            int finished_count = 0;
+            for (int i = 0; i < MAX_PROCESS; i++) {
+                if (pcb[i].state == FINISHED)
+                    finished_count++;
+            }
+
+            if (finished_count == MAX_PROCESS) {
+                stop_timer();
+                print_final_result(pcb, MAX_PROCESS);
+                break;
+            }
+        }
     }
 
     return 0;
