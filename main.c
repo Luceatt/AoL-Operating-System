@@ -137,57 +137,59 @@ void setup_signal_handler() {
 
 // ROUND ROBIN Scheduler Function
 int select_next_process(PCB pcb[], int n) {
-    int start = (current_process + 1) % n;
+    int start = (current_process + 1) % n;    // Menentukan indeks awal pencarian (round-robin)
 
-    for (int i = 0; i < n; i++) {
-        int idx = (start + i) % n;
+    for (int i = 0; i < n; i++) {    // Loop maksimal sebanyak jumlah proses
+        int idx = (start + i) % n;    // Hitung indeks proses secara melingkar
 
-        if (pcb[idx].state == READY && pcb[idx].remaining_time > 0 && pcb[idx].arrival_time <= current_time) {
-            return idx;
+        if (pcb[idx].state == READY &&      // Proses dalam keadaan READY
+            pcb[idx].remaining_time > 0 &&     // Masih punya waktu eksekusi
+            pcb[idx].arrival_time <= current_time) {    // Sudah tiba di waktu sekarang    
+            return idx;    // Kembalikan indeks proses yang dipilih
         }
     }
-    return -1;
+    return -1;     // Tidak ada proses yang siap dijalankan
 }
 
 void update_waiting_time(PCB pcb[], int n) {
-    for (int i = 0; i < n; i++) {
-        if (pcb[i].state == READY &&
-            pcb[i].arrival_time <= current_time &&
-            i != current_process) {
-            pcb[i].waiting_time += TIME_QUANTUM;
+    for (int i = 0; i < n; i++) {    // Loop semua proses
+        if (pcb[i].state == READY &&     // Proses dalam keadaan READY
+            pcb[i].arrival_time <= current_time &&    // Proses sudah tiba
+            i != current_process) {    // Bukan proses yang sedang berjalan
+            pcb[i].waiting_time += TIME_QUANTUM;    // Tambah waktu tunggu sesuai time quantum
         }
     }
 }
 
 void finish_process(PCB pcb[], int index) {
-    pcb[index].state = FINISHED;
-    pcb[index].finish_time = current_time;
+    pcb[index].state = FINISHED;    // Ubah status proses menjadi FINISHED
+    pcb[index].finish_time = current_time;    // Simpan waktu selesai proses
 
     pcb[index].turnaround_time =
-        pcb[index].finish_time - pcb[index].arrival_time;
+        pcb[index].finish_time - pcb[index].arrival_time;    // Hitung turnaround time
 
     pcb[index].waiting_time =
-        pcb[index].turnaround_time - pcb[index].burst_time;
+        pcb[index].turnaround_time - pcb[index].burst_time;    // Hitung waiting time akhir
 }
 
 void round_robin_scheduler(PCB pcb[], int n) {
 
     // Jika ada process RUNNING → preempt
     if (current_process != -1) {
-        kill(pcb[current_process].pid, SIGSTOP);
+        kill(pcb[current_process].pid, SIGSTOP);    // Hentikan sementara proses yang sedang berjalan
 
-        pcb[current_process].remaining_time -= TIME_QUANTUM;
+        pcb[current_process].remaining_time -= TIME_QUANTUM;    // Kurangi sisa waktu eksekusi
 
         // Update waiting time proses lain
-        update_waiting_time(pcb, n);
+        update_waiting_time(pcb, n);    
 
-        current_time += TIME_QUANTUM;
+        current_time += TIME_QUANTUM;    // Tambahkan waktu global sesuai time quantum
 
         // Jika selesai
         if (pcb[current_process].remaining_time <= 0) {
-            finish_process(pcb, current_process);
+            finish_process(pcb, current_process);     // Tandai proses selesai
         } else {
-            pcb[current_process].state = READY;
+            pcb[current_process].state = READY;    // Kembalikan ke state READY
         }
     }
 
@@ -198,11 +200,11 @@ void round_robin_scheduler(PCB pcb[], int n) {
         return; // Tidak ada process READY saat ini
     }
 
-    current_process = next;
-    pcb[current_process].state = RUNNING;
-    kill(pcb[current_process].pid, SIGCONT);
+    current_process = next;    // Set proses terpilih sebagai current process
+    pcb[current_process].state = RUNNING;    // Ubah state menjadi RUNNING
+    kill(pcb[current_process].pid, SIGCONT);    // Lanjutkan eksekusi proses
 
-    quantum_expired = 0;
+    quantum_expired = 0;    // Reset penanda time quantum
 }
 
 void display_process_status(PCB pcb[], int n) {
