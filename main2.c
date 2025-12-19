@@ -12,7 +12,7 @@
 int current_time = 0;       // Waktu simulasi sistem (dalam detik).
 int current_process = -1;   // Index process yang sedang RUNNING.
 volatile sig_atomic_t quantum_expired = 0;  // Flag untuk tandain bahwa time quantum telah habis.
-int running_time = TIME_QUANTUM; // beeapa lama process berjalan
+int running_time = TIME_QUANTUM; // berapa lama process berjalan
 
 // Process state sebagai representasi status execution suatu process dalam OS.
 typedef enum {
@@ -36,7 +36,61 @@ typedef struct {
 
     int waiting_time;       // Total waiting time process di queue.
     int turnaround_time;    // Turnaround Time = finish - arrival.
+
+    // ---------------------- tambah variable----------------------------
+    int in_queue; // Penanda apakah program sudah di queue atau belum
+    // ------------------------ selesai --------------------------------
 } PCB;
+
+//---------------------------- tambah fungsi disini ---------------------------
+
+// Membuat simple queue dan fungsi fungsinya
+typedef struct {
+    int data[MAX_PROCESS];
+    int front;
+    int rear;
+    int count;
+} ReadyQueue;
+
+// Fungsi inisialisasi queue
+void init_queue(ReadyQueue *q) {
+    q->front = 0;
+    q->rear = -1;
+    q->count = 0;
+}
+
+// Funtuk cek apakah queue kosong atau tidak
+int is_empty(ReadyQueue *q) {
+    return q->count == 0;
+}
+
+// Fungsi untuk cek apakah queue penuh atau tidak
+int is_full(ReadyQueue *q) {
+    return q->count == MAX_PROCESS;
+}
+
+// Fungsi untuk memasukan index kedalam queue
+void enqueue(ReadyQueue *q, int idx) {
+    if (is_full(q)) return;
+    q->rear = (q->rear + 1) % MAX_PROCESS;
+    q->data[q->rear] = idx;
+    q->count++;
+}
+
+// Fungsi untuk mengeluarkan index dari queue
+int dequeue(ReadyQueue *q) {
+    if (is_empty(q)) return -1;
+    int idx = q->data[q->front];
+    q->front = (q->front + 1) % MAX_PROCESS;
+    q->count--;
+    return idx;
+}
+
+// inisialisasi variable queuenya
+ReadyQueue ready_queue;
+
+//------------------------------------------ Selesai penambahan ---------------------------------
+
 
 // Fungsi child_process_work() merepresentasikan kerja suatu process.
 // Nanti diganti pakai scheduler -> berdasarkan burst time.
@@ -85,6 +139,7 @@ PCB create_pcb(int id, int arrival_time, int burst_time) {
     pcb.turnaround_time = 0;
     pcb.finish_time = -1;
 
+    pcb.in_queue = 0; // set process tidak di queue
     return pcb; // Return pcb yang sudah diisi.
 }
 
@@ -136,6 +191,21 @@ void setup_signal_handler() {
     sigaction(SIGALRM, &sa, NULL);
 }
 
+// ------------------------------ Fungsi baru ---------------------------------
+
+// Untuk mendeteksi process yang baru datang dan memasukannya di queue
+void check_new_arrivals(PCB pcb[], int n) {
+    for (int i = 0; i < n; i++) {
+        if (pcb[i].arrival_time <= current_time &&
+            pcb[i].state == READY && pcb[i].in_queue == 0) {
+            enqueue(&ready_queue, i);
+            pcb[i].in_queue = 1;
+        }
+    }
+}
+
+// ---------------------------------- Selesai --------------------------------
+
 // ROUND ROBIN Scheduler Function
 int select_next_process(PCB pcb[], int n) {
     int start = (current_process + 1) % n;
@@ -172,7 +242,7 @@ void finish_process(PCB pcb[], int index) {
 }
 
 void round_robin_scheduler(PCB pcb[], int n) {
-
+    check_new_arrivals(pcb,n); // check jika ada program yang datang
     // Jika ada process RUNNING → preempt
     if (current_process != -1) {
         kill(pcb[current_process].pid, SIGSTOP);
@@ -183,31 +253,32 @@ void round_robin_scheduler(PCB pcb[], int n) {
         update_waiting_time(pcb, n);
 
         current_time += running_time;
-
+        
         // Jika selesai
         if (pcb[current_process].remaining_time <= 0) {
             finish_process(pcb, current_process);
         } else {
             pcb[current_process].state = READY;
+            check_new_arrivals(pcb,n); // di cek dulu process yang datang baru masukan kembali ke queue
+            enqueue(&ready_queue,current_process); //jika masih remaining maka dimasukan kembali ke queue
+            pcb[current_process].in_queue = 1; // tandai kalau process sudah di queue
         }
     }
+     // 
 
-    // Pilih process berikutnya
-    int next = select_next_process(pcb, n);
-
-    if (next == -1) {
-        return; // Tidak ada process READY saat ini
+    // jika queue empty maka tidak ada process yang sedang berlangsung
+    if (is_empty(&ready_queue) ){
+        current_process = -1;
+        return;
     }
-    
-    current_process = next;
+
+    // Ambil process berikutnya dari queue
+    current_process = dequeue(&ready_queue);
+
     // -------------------- disini line code yang diupdate ---------------------
     // Jika remaining timenya lebih kecil dari time quantum maka runnting timenya akan diganti
-    if (pcb[current_process].remaining_time < TIME_QUANTUM){
-        running_time = pcb[current_process].remaining_time;
-    }
-    else{
-        running_time = TIME_QUANTUM;
-    }
+    running_time = (pcb[current_process].remaining_time < TIME_QUANTUM) 
+    ? pcb[current_process].remaining_time : TIME_QUANTUM;
     //---------------end here--------------------
 
 
@@ -217,6 +288,8 @@ void round_robin_scheduler(PCB pcb[], int n) {
     quantum_expired = 0;
 }
 
+
+// Fungsi untuk display status terkini dari process
 void display_process_status(PCB pcb[], int n) {
     printf("\n[TIME %d]\n", current_time);
     for (int i = 0; i < n; i++) {
@@ -228,6 +301,8 @@ void display_process_status(PCB pcb[], int n) {
     }
 }
 
+
+// Fungsi untuk display info dan hasil akhir tiap process
 void print_final_result(PCB pcb[], int n) {
     int total_wt = 0, total_tat = 0;
 
@@ -267,6 +342,9 @@ int main() {
     pcb[4] = create_pcb(5, 4, 3);
 
     printf("Creating processes...\n");
+
+    // Buat queuenya
+    init_queue(&ready_queue);
 
     // Buat child process menggunakan create_child_process().
     for (int i = 0; i < MAX_PROCESS; i++) {
